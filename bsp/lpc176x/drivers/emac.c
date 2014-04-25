@@ -151,162 +151,174 @@ rt_inline void tx_descr_init (void)
 
 static rt_err_t lpc17xx_emac_init(rt_device_t dev)
 {
-	/* Initialize the EMAC ethernet controller. */
-	rt_uint32_t regv, tout, id1, id2;
+/* Initialize the EMAC ethernet controller. */
+rt_uint32_t regv, id1, id2;
+volatile rt_uint32_t tout;
+/* Power Up the EMAC controller. */
+LPC_SC->PCONP |= 0x40000000;
 
-	/* Power Up the EMAC controller. */
-	LPC_SC->PCONP |= 0x40000000;
+/* Enable P1 Ethernet Pins. */
+LPC_PINCON->PINSEL2 = 0x50150105;
+LPC_PINCON->PINSEL3 = (LPC_PINCON->PINSEL3 & ~0x0000000F) | 0x00000005;
 
-	/* Enable P1 Ethernet Pins. */
-	LPC_PINCON->PINSEL2 = 0x50150105;
-	LPC_PINCON->PINSEL3 = (LPC_PINCON->PINSEL3 & ~0x0000000F) | 0x00000005;
+/* Reset all EMAC internal modules. */
+LPC_EMAC->MAC1 = MAC1_RES_TX | MAC1_RES_MCS_TX | MAC1_RES_RX | MAC1_RES_MCS_RX |
+             MAC1_SIM_RES | MAC1_SOFT_RES;
+LPC_EMAC->Command = CR_REG_RES | CR_TX_RES | CR_RX_RES;
 
-	/* Reset all EMAC internal modules. */
-	LPC_EMAC->MAC1 = MAC1_RES_TX | MAC1_RES_MCS_TX | MAC1_RES_RX | MAC1_RES_MCS_RX |
-				 MAC1_SIM_RES | MAC1_SOFT_RES;
-	LPC_EMAC->Command = CR_REG_RES | CR_TX_RES | CR_RX_RES;
+/* A short delay after reset. */
+for (tout = 100; tout; tout--);
 
-	/* A short delay after reset. */
-	for (tout = 100; tout; tout--);
+/* Initialize MAC control registers. */
+LPC_EMAC->MAC1 = MAC1_PASS_ALL;
+LPC_EMAC->MAC2 = MAC2_CRC_EN | MAC2_PAD_EN;
+LPC_EMAC->MAXF = ETH_MAX_FLEN;
+LPC_EMAC->CLRT = CLRT_DEF;
+LPC_EMAC->IPGR = IPGR_DEF;
 
-	/* Initialize MAC control registers. */
-	LPC_EMAC->MAC1 = MAC1_PASS_ALL;
-	LPC_EMAC->MAC2 = MAC2_CRC_EN | MAC2_PAD_EN;
-	LPC_EMAC->MAXF = ETH_MAX_FLEN;
-	LPC_EMAC->CLRT = CLRT_DEF;
-	LPC_EMAC->IPGR = IPGR_DEF;
+/* PCLK=18MHz, clock select=6, MDC=18/6=3MHz */
+/* Enable Reduced MII interface. */
+LPC_EMAC->MCFG = MCFG_CLK_DIV20 | MCFG_RES_MII;
+for (tout = 100; tout; tout--);
+LPC_EMAC->MCFG = MCFG_CLK_DIV20;
 
-	/* PCLK=18MHz, clock select=6, MDC=18/6=3MHz */
-	/* Enable Reduced MII interface. */
-	LPC_EMAC->MCFG = MCFG_CLK_DIV20 | MCFG_RES_MII;
-	for (tout = 100; tout; tout--);
-	LPC_EMAC->MCFG = MCFG_CLK_DIV20;
+/* Enable Reduced MII interface. */
+LPC_EMAC->Command = CR_RMII | CR_PASS_RUNT_FRM | CR_PASS_RX_FILT;
 
-	/* Enable Reduced MII interface. */
-	LPC_EMAC->Command = CR_RMII | CR_PASS_RUNT_FRM | CR_PASS_RX_FILT;
+/* Reset Reduced MII Logic. */
+LPC_EMAC->SUPP = SUPP_RES_RMII | SUPP_SPEED;
+for (tout = 100; tout; tout--);
+LPC_EMAC->SUPP = SUPP_SPEED;
 
-	/* Reset Reduced MII Logic. */
-	LPC_EMAC->SUPP = SUPP_RES_RMII | SUPP_SPEED;
-	for (tout = 100; tout; tout--);
-	LPC_EMAC->SUPP = SUPP_SPEED;
+/* Put the PHY in reset mode */
+write_PHY (PHY_REG_BMCR, 0x8000);
+for (tout = 1000; tout; tout--);
 
-	/* Put the PHY in reset mode */
-	write_PHY (PHY_REG_BMCR, 0x8000);
-	for (tout = 1000; tout; tout--);
-
-	/* Wait for hardware reset to end. */
-	for (tout = 0; tout < 0x100000; tout++)
-	{
-		regv = read_PHY (PHY_REG_BMCR);
-		if (!(regv & 0x8000))
-		{
-			/* Reset complete */
-			break;
-		}
-	}
-	if (tout >= 0x100000) return -RT_ERROR; /* reset failed */
-
-	/* Check if this is a DP83848C PHY. */
-	id1 = read_PHY (PHY_REG_IDR1);
-	id2 = read_PHY (PHY_REG_IDR2);
-
-	if (((id1 << 16) | (id2 & 0xFFF0)) != DP83848C_ID)
-		return -RT_ERROR;
-
-	/* Configure the PHY device */
-	/* Configure the PHY device */
-	switch (lpc17xx_emac_device.phy_mode)
-	{
-	case EMAC_PHY_AUTO:
-		/* Use auto negotiation about the link speed. */
-		write_PHY (PHY_REG_BMCR, PHY_AUTO_NEG);
-		/* Wait to complete Auto_Negotiation. */
-		for (tout = 0; tout < 0x100000; tout++)
-		{
-			regv = read_PHY (PHY_REG_BMSR);
-			if (regv & 0x0020)
-			{
-				/* Auto negotiation Complete. */
-				break;
-			}
-		}
-		break;
-	case EMAC_PHY_10MBIT:
-		/* Connect at 10MBit */
-		write_PHY (PHY_REG_BMCR, PHY_FULLD_10M);
-		break;
-	case EMAC_PHY_100MBIT:
-		/* Connect at 100MBit */
-		write_PHY (PHY_REG_BMCR, PHY_FULLD_100M);
-		break;
-	}
-	if (tout >= 0x100000) return -RT_ERROR; // auto_neg failed
-
-	/* Check the link status. */
-	for (tout = 0; tout < 0x10000; tout++)
-	{
-		regv = read_PHY (PHY_REG_STS);
-		if (regv & 0x0001)
-		{
-			/* Link is on. */
-			break;
-		}
-	}
-	if (tout >= 0x10000) return -RT_ERROR;
-
-	/* Configure Full/Half Duplex mode. */
-	if (regv & 0x0004)
-	{
-		/* Full duplex is enabled. */
-		LPC_EMAC->MAC2    |= MAC2_FULL_DUP;
-		LPC_EMAC->Command |= CR_FULL_DUP;
-		LPC_EMAC->IPGT     = IPGT_FULL_DUP;
-	}
-	else
-	{
-		/* Half duplex mode. */
-		LPC_EMAC->IPGT = IPGT_HALF_DUP;
-	}
-
-	/* Configure 100MBit/10MBit mode. */
-	if (regv & 0x0002)
-	{
-		/* 10MBit mode. */
-		LPC_EMAC->SUPP = 0;
-	}
-	else
-	{
-		/* 100MBit mode. */
-		LPC_EMAC->SUPP = SUPP_SPEED;
-	}
-
-	/* Set the Ethernet MAC Address registers */
-	LPC_EMAC->SA0 = (lpc17xx_emac_device.dev_addr[1]<<8) | lpc17xx_emac_device.dev_addr[0];
-	LPC_EMAC->SA1 = (lpc17xx_emac_device.dev_addr[3]<<8) | lpc17xx_emac_device.dev_addr[2];
-	LPC_EMAC->SA2 = (lpc17xx_emac_device.dev_addr[5]<<8) | lpc17xx_emac_device.dev_addr[4];
-
-	/* Initialize Tx and Rx DMA Descriptors */
-	rx_descr_init ();
-	tx_descr_init ();
-
-	/* Receive Broadcast and Perfect Match Packets */
-	LPC_EMAC->RxFilterCtrl = RFC_BCAST_EN | RFC_PERFECT_EN;
-
-	/* Reset all interrupts */
-	LPC_EMAC->IntClear  = 0xFFFF;
-
-	/* Enable EMAC interrupts. */
-	LPC_EMAC->IntEnable = INT_RX_DONE | INT_TX_DONE;
-
-	/* Enable receive and transmit mode of MAC Ethernet core */
-	LPC_EMAC->Command  |= (CR_RX_EN | CR_TX_EN);
-	LPC_EMAC->MAC1     |= MAC1_REC_EN;
-
-	/* Enable the ENET Interrupt */
-	NVIC_EnableIRQ(ENET_IRQn);
-
-	return RT_EOK;
+/* Wait for hardware reset to end. */
+for (tout = 0; tout < 10000; tout++)
+{
+    regv = read_PHY (PHY_REG_BMCR);
+    if (!(regv & 0x8000))
+    {
+        /* Reset complete */
+        break;
+    }
 }
+if(tout >= 10000)
+{
+    rt_kprintf("\tPHY Read PHY_REG_BMSR,Reset timeout,tout: %d.\n",tout);//3568
+}
+//  if (tout >= 0x100000) return -RT_ERROR; /* reset failed */
+
+/* Check if this is a DP83848C PHY. */
+id1 = read_PHY (PHY_REG_IDR1);
+id2 = read_PHY (PHY_REG_IDR2);
+
+if (((id1 << 16) | (id2 & 0xFFF0)) == DP83848C_ID)
+{
+//      return -RT_ERROR;
+
+    /* Configure the PHY device */
+    switch (lpc17xx_emac_device.phy_mode)
+    {
+        case EMAC_PHY_AUTO:
+            /* Use auto negotiation about the link speed. */
+            write_PHY (PHY_REG_BMCR, PHY_AUTO_NEG);
+            /* Wait to complete Auto_Negotiation. */
+            for (tout = 0; tout < 200000; tout++)
+            {
+                regv = read_PHY (PHY_REG_BMSR);
+                if (regv & 0x0020)
+                {
+                    /* Auto negotiation Complete. */
+                    break;
+                }
+            }
+            if(tout >= 200000)
+            {
+                rt_kprintf("\tPHY Read PHY_REG_BMSR,Auto nego timeout,tout: %d.\n",tout); // 142060
+            }
+            break;
+        case EMAC_PHY_10MBIT:
+            /* Connect at 10MBit */
+            write_PHY (PHY_REG_BMCR, PHY_FULLD_10M);
+            break;
+        case EMAC_PHY_100MBIT:
+            /* Connect at 100MBit */
+            write_PHY (PHY_REG_BMCR, PHY_FULLD_100M);
+            break;
+    }
+}
+
+for (tout = 0; tout < 100; tout++)
+{
+    regv = read_PHY (PHY_REG_STS);
+    if (regv & 0x0001)
+    {
+        /* Link is on. */
+        break;
+    }
+}
+if(tout >= 100)
+{
+    rt_kprintf("\tPHY Read PHY_REG_BMSR,Link on timeout,tout: %d.\n",tout);//0
+}
+//  if (tout >= 0x10000) return -RT_ERROR;
+
+/* Configure Full/Half Duplex mode. */
+if (regv & 0x0004)
+{
+    /* Full duplex is enabled. */
+    LPC_EMAC->MAC2    |= MAC2_FULL_DUP;
+    LPC_EMAC->Command |= CR_FULL_DUP;
+    LPC_EMAC->IPGT     = IPGT_FULL_DUP;
+}
+else
+{
+    /* Half duplex mode. */
+    LPC_EMAC->IPGT = IPGT_HALF_DUP;
+}
+
+/* Configure 100MBit/10MBit mode. */
+if (regv & 0x0002)
+{
+    /* 10MBit mode. */
+    LPC_EMAC->SUPP = 0;
+}
+else
+{
+    /* 100MBit mode. */
+    LPC_EMAC->SUPP = SUPP_SPEED;
+}
+
+/* Set the Ethernet MAC Address registers */
+LPC_EMAC->SA0 = (lpc17xx_emac_device.dev_addr[1]<<8) | lpc17xx_emac_device.dev_addr[0];
+LPC_EMAC->SA1 = (lpc17xx_emac_device.dev_addr[3]<<8) | lpc17xx_emac_device.dev_addr[2];
+LPC_EMAC->SA2 = (lpc17xx_emac_device.dev_addr[5]<<8) | lpc17xx_emac_device.dev_addr[4];
+
+/* Initialize Tx and Rx DMA Descriptors */
+rx_descr_init ();
+tx_descr_init ();
+
+/* Receive Broadcast and Perfect Match Packets */
+LPC_EMAC->RxFilterCtrl = RFC_BCAST_EN | RFC_PERFECT_EN;
+
+/* Reset all interrupts */
+LPC_EMAC->IntClear  = 0xFFFF;
+
+/* Enable EMAC interrupts. */
+LPC_EMAC->IntEnable = INT_RX_DONE | INT_TX_DONE;
+
+/* Enable receive and transmit mode of MAC Ethernet core */
+LPC_EMAC->Command  |= (CR_RX_EN | CR_TX_EN);
+LPC_EMAC->MAC1     |= MAC1_REC_EN;
+
+/* Enable the ENET Interrupt */
+NVIC_EnableIRQ(ENET_IRQn);
+
+return RT_EOK;
+}
+     
 
 static rt_err_t lpc17xx_emac_open(rt_device_t dev, rt_uint16_t oflag)
 {
